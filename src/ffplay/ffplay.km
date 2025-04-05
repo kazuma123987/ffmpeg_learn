@@ -1,0 +1,278 @@
+{
+    "root": {
+        "data": {
+            "id": "d8tfx6myxmw0",
+            "created": 1743321573329,
+            "text": "ffplay"
+        },
+        "children": [
+            {
+                "data": {
+                    "id": "d8tfxyfgpd40",
+                    "created": 1743321633825,
+                    "text": "main\n最后作用:作为读取视频FrameQuene\n和字幕FrameQuene的视频和字幕播放线程",
+                    "color": "#ff0000",
+                    "layout_bottom_offset": {
+                        "x": -43,
+                        "y": 40
+                    }
+                },
+                "children": [
+                    {
+                        "data": {
+                            "id": "d8tfzw3zydk0",
+                            "created": 1743321785506,
+                            "text": "获取输入文件路径并初始化SDL或Vulkan",
+                            "layout_bottom_offset": {
+                                "x": 0,
+                                "y": -6
+                            }
+                        },
+                        "children": [
+                            {
+                                "data": {
+                                    "id": "d8tg8i8zky00",
+                                    "created": 1743322460610,
+                                    "text": "创建read_thread线程",
+                                    "color": "#ff0000"
+                                },
+                                "children": [
+                                    {
+                                        "data": {
+                                            "id": "d8tgoupzy280",
+                                            "created": 1743323741587,
+                                            "text": "while循环处理SDL事件(按键、退出等)"
+                                        },
+                                        "children": []
+                                    },
+                                    {
+                                        "data": {
+                                            "id": "d8tgpy1lsgo0",
+                                            "created": 1743323827183,
+                                            "text": "while循环处理视频播放"
+                                        },
+                                        "children": []
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "data": {
+                    "id": "d8tfy5gxwtc0",
+                    "created": 1743321649151,
+                    "text": "read_thread\n(从文件中提取视频PacketQuene、\n音频PacketQuene和字幕PacketQuene)",
+                    "color": "#ff0000",
+                    "layout_bottom_offset": {
+                        "x": 8,
+                        "y": 10
+                    }
+                },
+                "children": [
+                    {
+                        "data": {
+                            "id": "d8tga13alr40",
+                            "created": 1743322579989,
+                            "text": "av_dump_format打印要解码的文件信息"
+                        },
+                        "children": [
+                            {
+                                "data": {
+                                    "id": "d8tgmczict40",
+                                    "created": 1743323546252,
+                                    "text": "            av_find_best_stream(视频)?",
+                                    "layout_bottom_offset": {
+                                        "x": 9,
+                                        "y": -1
+                                    }
+                                },
+                                "children": [
+                                    {
+                                        "data": {
+                                            "id": "d8tgomwz17c0",
+                                            "created": 1743323724594,
+                                            "text": "创建video_thread线程",
+                                            "color": "#ff0000"
+                                        },
+                                        "children": []
+                                    }
+                                ]
+                            },
+                            {
+                                "data": {
+                                    "id": "d8tgnbh4nrs0",
+                                    "created": 1743323621328,
+                                    "text": "av_find_best_stream(\n音频)?"
+                                },
+                                "children": [
+                                    {
+                                        "data": {
+                                            "id": "d8tgqd1f4f40",
+                                            "created": 1743323859824,
+                                            "text": "创建audio_thread线程",
+                                            "layout_bottom_offset": {
+                                                "x": -1,
+                                                "y": -5
+                                            },
+                                            "color": "#ff0000"
+                                        },
+                                        "children": []
+                                    }
+                                ]
+                            },
+                            {
+                                "data": {
+                                    "id": "d8tgni0qd0w0",
+                                    "created": 1743323635574,
+                                    "text": "av_find_best_stream(字幕)?",
+                                    "expandState": "expand"
+                                },
+                                "children": [
+                                    {
+                                        "data": {
+                                            "id": "d8tgqixxvog0",
+                                            "created": 1743323872674,
+                                            "text": "创建subtitle_thread线程",
+                                            "color": "#ff0000"
+                                        },
+                                        "children": []
+                                    }
+                                ]
+                            },
+                            {
+                                "data": {
+                                    "id": "d8tgritn6oo0",
+                                    "created": 1743323950778,
+                                    "text": "如果:\n\t1.所有线程创建完\n\t2.音频、视频、字幕AVPacket队列都没有满\n那么:\n\t av_frame_read解码文件成AVPacket",
+                                    "layout_bottom_offset": {
+                                        "x": -21,
+                                        "y": 27
+                                    },
+                                    "expandState": "expand"
+                                },
+                                "children": [
+                                    {
+                                        "data": {
+                                            "id": "d8tgt5jygow0",
+                                            "created": 1743324078623,
+                                            "text": "AVPacket是视频?"
+                                        },
+                                        "children": [
+                                            {
+                                                "data": {
+                                                    "id": "d8th2dr2gy00",
+                                                    "created": 1743324801745,
+                                                    "text": "packet_queue_put_nullpacket\n把AVPacket推到视频PacketQuene",
+                                                    "layout_bottom_offset": {
+                                                        "x": 0,
+                                                        "y": -1
+                                                    }
+                                                },
+                                                "children": []
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        "data": {
+                                            "id": "d8tgte545200",
+                                            "created": 1743324097316,
+                                            "text": "AVPacket是音频?"
+                                        },
+                                        "children": [
+                                            {
+                                                "data": {
+                                                    "id": "d8th2y0y8h40",
+                                                    "created": 1743324845878,
+                                                    "text": "packet_queue_put_nullpacket\n把AVPacket推到音频PacketQuene"
+                                                },
+                                                "children": []
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        "data": {
+                                            "id": "d8tgtim3qko0",
+                                            "created": 1743324107051,
+                                            "text": "AVPacket是字幕?"
+                                        },
+                                        "children": [
+                                            {
+                                                "data": {
+                                                    "id": "d8th34qt55k0",
+                                                    "created": 1743324860502,
+                                                    "text": "packet_queue_put_nullpacket\n把AVPacket推到字幕PacketQuene",
+                                                    "layout_bottom_offset": {
+                                                        "x": 0,
+                                                        "y": 1
+                                                    }
+                                                },
+                                                "children": []
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "data": {
+                    "id": "d8tfyaaoeeo0",
+                    "created": 1743321659657,
+                    "text": "video_thread\n(提取视频PacketQuene\n到视频FrameQuene)",
+                    "color": "#ff0000",
+                    "layout_bottom_offset": {
+                        "x": -76,
+                        "y": 4
+                    }
+                },
+                "children": []
+            },
+            {
+                "data": {
+                    "id": "d8tfz25ig7s0",
+                    "created": 1743321720294,
+                    "text": "audio_thread\n(提取音频PacketQuene\n到音频FrameQuene)",
+                    "color": "#ff0000",
+                    "layout_bottom_offset": {
+                        "x": -48,
+                        "y": 5
+                    }
+                },
+                "children": []
+            },
+            {
+                "data": {
+                    "id": "d8tfz77tnrk0",
+                    "created": 1743321731318,
+                    "text": "subtitle_thread\n(提取字幕PacketQuene\n到字幕FrameQuene)",
+                    "color": "#ff0000",
+                    "layout_bottom_offset": {
+                        "x": -43,
+                        "y": 5
+                    }
+                },
+                "children": []
+            },
+            {
+                "data": {
+                    "id": "d8tgwucui1s0",
+                    "created": 1743324367705,
+                    "text": "音频播放线程(回调函数sdl_audio_callback)",
+                    "color": "#ff0000",
+                    "layout_bottom_offset": {
+                        "x": -47,
+                        "y": 5
+                    }
+                },
+                "children": []
+            }
+        ]
+    },
+    "template": "structure",
+    "theme": "fresh-blue",
+    "version": "1.4.43"
+}
