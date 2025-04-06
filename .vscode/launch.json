@@ -10,6 +10,7 @@
             "request": "launch",
             "program": "${workspaceFolder}/bin/media_player.exe",
             // "program": "${workspaceFolder}/bin/ffplay.exe",
+            // "program": "${workspaceFolder}/bin/video_demo.exe",
             "args": [
             ],
             "stopAtEntry": false,
