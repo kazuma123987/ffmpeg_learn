@@ -7,7 +7,7 @@ static AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
 
 std::mutex decode_mux;
 
-static bool hwDecode = true;
+static bool hwDecode = false;
 
 // 用于编解码上下文的get_format回调函数
 static enum AVPixelFormat custom_get_format(AVCodecContext *vCodecCtx, const enum AVPixelFormat *pix_fmt)
@@ -141,7 +141,7 @@ void VideoPlayer::init_ffmpeg(const char *customPath)
     // 设置转换参数
     this->audio_ctx_.out_nb_samples = 1024;
     this->audio_ctx_.out_nb_channels = audio_codec_ctx->ch_layout.nb_channels;
-    this->audio_ctx_.out_sample_rate = 48000;
+    this->audio_ctx_.out_sample_rate = audio_codec_ctx->sample_rate;
     if (audio_codec_ctx->sample_rate > this->audio_ctx_.out_sample_rate)
         this->audio_ctx_.out_sample_rate = audio_codec_ctx->sample_rate;
     this->audio_ctx_.out_ch_layout = AV_CHANNEL_LAYOUT_STEREO;
