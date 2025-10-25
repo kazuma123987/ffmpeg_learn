@@ -98,7 +98,8 @@
         "sdl.h": "c",
         "avstring.h": "c",
         "avcodec.h": "c",
-        "text_encoding": "cpp"
+        "text_encoding": "cpp",
+        "ffplay_renderer.h": "c"
     },
     "CodeGPT.apiKey": "Ollama",
     "editor.suggestOnTriggerCharacters": true

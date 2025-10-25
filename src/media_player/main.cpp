@@ -774,3 +774,169 @@ void framesizecallback(GLFWwindow *window, int width, int height)
     glViewport(0, 0, width, height);
 }
 #endif
+
+#if 0
+//=== 解复用线程实现 ===
+void au_demux_loop(const char *path, VideoPlayer *player)
+{
+    // avformat
+    AVFormatContext *fmtCtx = avformat_alloc_context();
+    if (avformat_open_input(&fmtCtx, path, NULL, NULL))
+        printf("failed to open the path:%s\n", path);
+    if (avformat_find_stream_info(fmtCtx, NULL) < 0)
+        printf("no stream info in path:%s\n", path);
+    // find decoder
+    int aIndex = -1;
+    const AVCodec *aDecoder = NULL;
+    aIndex = av_find_best_stream(fmtCtx, AVMEDIA_TYPE_AUDIO, -1, -1, &aDecoder, 0);
+    if (aIndex == -1)
+        printf("failed to find the best stream in func:%s,line:%d", __FUNCTION__, __LINE__);
+    // open decoder
+    AVCodecContext *aCodecCtx = avcodec_alloc_context3(aDecoder);
+    AVCodecParameters *par = fmtCtx->streams[aIndex]->codecpar;
+    avcodec_parameters_to_context(aCodecCtx, par);
+    if (avcodec_open2(aCodecCtx, aDecoder, NULL) < 0)
+        printf("failed to open the audio decoder\n");
+    // 设置转换参数
+    int out_nb_samples = 1024;
+    int out_nb_channels = aCodecCtx->ch_layout.nb_channels;
+    int out_sample_rate = aCodecCtx->sample_rate;
+    if (aCodecCtx->sample_rate > out_sample_rate)
+        out_sample_rate = aCodecCtx->sample_rate;
+    AVChannelLayout out_ch_layout = AV_CHANNEL_LAYOUT_STEREO;
+    AVSampleFormat out_sample_format = AV_SAMPLE_FMT_S32;
+    AVChannelLayout in_ch_layout = {};
+    av_channel_layout_default(&in_ch_layout, aCodecCtx->ch_layout.nb_channels);
+    // 设置转换上下文
+    SwrContext *swrCtx = NULL;
+    swr_alloc_set_opts2(
+        &swrCtx, &out_ch_layout, out_sample_format, out_sample_rate,
+        &aCodecCtx->ch_layout, aCodecCtx->sample_fmt, aCodecCtx->sample_rate, 0, NULL);
+    swr_init(swrCtx);
+    // 分配容器空间
+    AVFrame *aFrame = av_frame_alloc();
+    AVPacket *packet = av_packet_alloc();
+    int bufferSize = av_samples_get_buffer_size(NULL, out_nb_channels, out_nb_samples, out_sample_format, 1);
+    unsigned char *buffer = (unsigned char *)av_malloc(bufferSize);
+#ifdef USE_FMOD_AUDIO
+    // 设置FMOD参数
+    FMOD_CREATESOUNDEXINFO exinfo;
+    memset(&exinfo, 0, sizeof(FMOD_CREATESOUNDEXINFO));
+    uint8_t ltpcmlen = 0U;
+    switch (out_sample_format)
+    {
+    case AV_SAMPLE_FMT_U8:
+        exinfo.format = FMOD_SOUND_FORMAT_PCM8;
+        ltpcmlen = 1U;
+        break;
+    case AV_SAMPLE_FMT_S16:
+        exinfo.format = FMOD_SOUND_FORMAT_PCM16;
+        ltpcmlen = 2U;
+        break;
+    case AV_SAMPLE_FMT_S32:
+        exinfo.format = FMOD_SOUND_FORMAT_PCM32;
+        ltpcmlen = 4U;
+        break;
+    case AV_SAMPLE_FMT_FLT:
+        exinfo.format = FMOD_SOUND_FORMAT_PCMFLOAT;
+        ltpcmlen = 4U;
+        break;
+    default:
+        exinfo.format = FMOD_SOUND_FORMAT_NONE;
+        break;
+    }
+    exinfo.cbsize = sizeof(FMOD_CREATESOUNDEXINFO);
+    exinfo.defaultfrequency = out_sample_rate;
+    exinfo.decodebuffersize = out_nb_samples;
+    exinfo.length = out_sample_rate * ltpcmlen * out_nb_channels * 5; // '5'代表5秒
+    exinfo.numchannels = out_nb_channels;
+    exinfo.pcmreadcallback = fmod_read_data;
+    SoundManager *sound = new SoundManager(32);
+    sound->loadSound(NULL, "bgm", FMOD_CREATESTREAM | FMOD_OPENUSER | FMOD_LOOP_NORMAL, &exinfo);
+    while (!start_or_quit)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    sound->playSound("bgm", 0);
+#elif defined(USE_SDL_AUDIO)
+    // SDL音频参数
+    SDL_AudioSpec spec;
+    spec.freq = out_sample_rate;
+    spec.channels = out_nb_channels;
+    spec.silence = 0;
+    spec.samples = out_nb_samples;
+    spec.callback = audio_callback;
+    spec.userdata = player;
+    switch (out_sample_format)
+    {
+    case AV_SAMPLE_FMT_S16:
+        spec.format = AUDIO_S16SYS;
+        break;
+    case AV_SAMPLE_FMT_S32:
+        spec.format = AUDIO_S32SYS;
+        break;
+    case AV_SAMPLE_FMT_FLT:
+        spec.format = AUDIO_F32SYS;
+        break;
+    default:
+        break;
+    }
+    // 打开SDL音频
+    if (SDL_OpenAudio(&spec, NULL) < 0)
+    {
+        printf("can't open audio.\n");
+        return;
+    }
+    // 设置为0表示开始播放
+    SDL_PauseAudio(0);
+#endif
+
+    AVFrame *dstFrame = nullptr;
+
+    while (1)
+    {
+        if (av_read_frame(fmtCtx, packet) >= 0)
+        {
+            if (packet->stream_index == aIndex)
+            {
+                int ret = avcodec_send_packet(aCodecCtx, packet);
+
+                if (ret < 0)
+                {
+                    continue;
+                }
+
+                // 接收解码后的帧
+                while (ret >= 0)
+                {
+                    ret = avcodec_receive_frame(aCodecCtx, aFrame);
+                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                    {
+                        break;
+                    }
+                    else if (ret < 0)
+                    {
+                        break;
+                    }
+
+                    dstFrame = av_frame_clone(aFrame);
+
+                    player->audio_frame_quene.push(std::move(dstFrame));
+                }
+            }
+            av_packet_unref(packet);
+        }
+    }
+
+    // 清除空间
+#ifdef USE_FMOD_AUDIO
+    delete sound;
+#endif
+    avformat_free_context(fmtCtx);
+    avcodec_free_context(&aCodecCtx);
+    av_frame_free(&aFrame);
+    av_packet_free(&packet);
+    av_free(buffer);
+    swr_free(&swrCtx);
+}
+#endif

@@ -39,6 +39,11 @@ extern "C"
 #ifdef __cplusplus
 }
 
+// #define USE_SDL_WINDOW
+#define USE_GLFW_WINDOW
+// #define USE_FMOD_AUDIO
+#define USE_SDL_AUDIO
+
 //=== FFmpeg对象包装器 ===
 
 struct AVFrameDeleter
@@ -57,7 +62,9 @@ struct AudioContext
     SwrContext *swr_ctx = nullptr;
     AVChannelLayout out_ch_layout = AV_CHANNEL_LAYOUT_STEREO;
     AVSampleFormat out_sample_fmt = AV_SAMPLE_FMT_S32;
+#ifdef USE_SDL_AUDIO
     SDL_AudioFormat sdl_audio_format = AUDIO_S32SYS;
+#endif
     int frame_size = 0;
     int out_nb_samples = 1024;
     int out_nb_channels = 2;
@@ -91,7 +98,8 @@ public:
     // SafeQueue<AVPacket *> video_packet_queue{30}; // 最多缓存30个视频包
     // SafeQueue<AVPacket *> audio_packet_queue{100};   // 最多缓存100个音频包
     SafeQueue<AVFrame *> video_frame_queue{100}; // 最多缓存100帧视频
-    SafeQueue<AVFrame *> audio_frame_quene{100}; // 
+    SafeQueue<AVFrame *> audio_frame_quene{200}; // 
+    AVRational video_time_base, audio_time_base;
 
     // 线程控制
     std::atomic<bool> running{true};
@@ -104,17 +112,20 @@ public:
     std::condition_variable audio_cv;
     SyncClock sync_clock;
 
-private:
-    static void audio_callback(void *userdata, Uint8 *stream, int len);
-    // 成员变量
     AudioContext audio_ctx_;
+
+private:
+    // 成员变量
     AVFormatContext *fmt_ctx = nullptr;
     AVCodecContext *video_codec_ctx = nullptr;
     AVCodecContext *audio_codec_ctx = nullptr;
     AVBufferRef *hwCtx = nullptr;
-    AVRational video_time_base, audio_time_base;
+#ifdef USE_SDL_WINDOW
     SDL_Window *window = nullptr;
     SDL_GLContext gl_context = nullptr;
+#elif defined(USE_GLFW_WINDOW)
+    GLFWwindow *window = nullptr;
+#endif
     Shader nv12Shader, yuv420Shader;
     Shader *rendererShader;
     GLuint VAO, VBO;

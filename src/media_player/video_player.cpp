@@ -7,8 +7,25 @@ static AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
 
 std::mutex decode_mux;
 
-static bool hwDecode = false;
-
+static bool hwDecode = true;
+static double video_pts, audio_pts;
+void setFPS(void *window)
+{
+    static int fpsCount = 0;
+    fpsCount++;
+    static auto lastTime = std::chrono::high_resolution_clock::now();
+    auto curTime = std::chrono::high_resolution_clock::now();
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(curTime - lastTime).count() >= 1000)
+    {
+        lastTime = curTime;
+#ifdef USE_SDL_WINDOW
+        SDL_SetWindowTitle((SDL_Window *)window, ("Media Player   FPS:" + std::to_string(fpsCount)).c_str());
+#elif defined(USE_GLFW_WINDOW)
+        glfwSetWindowTitle((GLFWwindow *)window, ("Media Player   FPS:" + std::to_string(fpsCount)).c_str());
+#endif
+        fpsCount = 0;
+    }
+}
 // 用于编解码上下文的get_format回调函数
 static enum AVPixelFormat custom_get_format(AVCodecContext *vCodecCtx, const enum AVPixelFormat *pix_fmt)
 {
@@ -20,6 +37,184 @@ static enum AVPixelFormat custom_get_format(AVCodecContext *vCodecCtx, const enu
     }
     printf("failed to get hw_format\n");
     return AV_PIX_FMT_NONE;
+}
+
+#ifdef USE_FMOD
+FMOD_RESULT F_CALLBACK audio_callback(FMOD_SOUND *sound, void *data, unsigned int len)
+{
+    if (len == 0)
+        return FMOD_OK;
+
+    uint8_t **stream = (uint8_t **)&data;
+    memset(stream[0], 0, len);
+    // 从队列获取音频帧
+    AVFrame *frame = nullptr;
+    void *userdata = nullptr;
+    FMOD_Sound_GetUserData(sound, &userdata);
+    VideoPlayer *player = static_cast<VideoPlayer *>(userdata);
+    if (!player->audio_frame_quene.pop(frame, 5))
+    { // 5ms超时
+        return FMOD_RESULT_FORCEINT;
+    }
+
+    auto &ac = player->audio_ctx_;
+    uint8_t *out_data[1] = {ac.buffer.data()};
+    ac.buffer.resize(ac.buffer.capacity());
+    swr_convert(ac.swr_ctx, out_data, player->audio_ctx_.out_nb_samples,
+                const_cast<const uint8_t **>(frame->data),
+                frame->nb_samples);
+    // 更新同步时钟（加权平均）
+    static int64_t lastframepts = 0;
+    double frame_pts = lastframepts * av_q2d(player->audio_time_base);
+    lastframepts = frame->pts;
+    // 获取当前时间点
+    auto now = std::chrono::high_resolution_clock::now();
+    // 将时间点转换为自纪元（epoch）以来的纳秒数
+    const int64_t now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
+    player->sync_clock.update_audio(frame_pts, now_ns); // 平滑系数0.2
+    audio_pts = frame->pts * av_q2d(player->audio_time_base);
+    // audio_pts = frame->pts / 1000000.0;
+
+    av_frame_free(&frame);
+    // 计算可拷贝数据量
+    const int copy_bytes = (ac.buffer.size() < len ? ac.buffer.size() : len);
+    if (copy_bytes > 0)
+    {
+        // 混合到输出流
+        memcpy(stream[0], ac.buffer.data(), copy_bytes);
+
+        // 更新缓冲区
+        ac.buffer.erase(ac.buffer.begin(), ac.buffer.begin() + copy_bytes);
+        stream[0] += copy_bytes;
+        len -= copy_bytes;
+    }
+    return FMOD_OK;
+}
+#elif defined(USE_SDL_AUDIO)
+static void audio_callback(void *userdata, Uint8 *stream, int len)
+{
+    if (len == 0)
+        return;
+    // 清空目标缓冲区
+    SDL_memset(stream, 0, len);
+
+    // 从队列获取音频帧
+    AVFrame *frame = nullptr;
+    VideoPlayer *player = static_cast<VideoPlayer *>(userdata);
+    if (!player->audio_frame_quene.pop(frame, 5))
+    { // 5ms超时
+        return;
+    }
+
+    auto &ac = player->audio_ctx_;
+    uint8_t *out_data[1] = {ac.buffer.data()};
+    ac.buffer.resize(ac.buffer.capacity());
+    swr_convert(ac.swr_ctx, out_data, player->audio_ctx_.out_nb_samples,
+                const_cast<const uint8_t **>(frame->data),
+                frame->nb_samples);
+    // 更新同步时钟（加权平均）
+    static int64_t lastframepts = 0;
+    double frame_pts = lastframepts * av_q2d(player->audio_time_base);
+    lastframepts = frame->pts;
+    // 获取当前时间点
+    auto now = std::chrono::high_resolution_clock::now();
+    // 将时间点转换为自纪元（epoch）以来的纳秒数
+    const int64_t now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
+    player->sync_clock.update_audio(frame_pts, now_ns); // 平滑系数0.2
+    audio_pts = frame->pts * av_q2d(player->audio_time_base);
+
+    av_frame_free(&frame);
+    // 计算可拷贝数据量
+    const int copy_bytes = (ac.buffer.size() < len ? ac.buffer.size() : len);
+    if (copy_bytes > 0)
+    {
+        // 混合到输出流
+        SDL_MixAudioFormat(stream, ac.buffer.data(), ac.sdl_audio_format,
+                           copy_bytes, SDL_MIX_MAXVOLUME);
+
+        // 更新缓冲区
+        ac.buffer.erase(ac.buffer.begin(), ac.buffer.begin() + copy_bytes);
+        stream += copy_bytes;
+        len -= copy_bytes;
+    }
+}
+#endif
+
+#ifdef USE_FMOD
+static SoundManager sound(32);
+#endif
+
+static void audio_play(VideoPlayer *player)
+{
+#ifdef USE_FMOD
+    // 设置FMOD参数
+    FMOD_CREATESOUNDEXINFO exinfo;
+    memset(&exinfo, 0, sizeof(FMOD_CREATESOUNDEXINFO));
+    uint8_t ltpcmlen = 0U;
+    switch (player->audio_ctx_.out_sample_fmt)
+    {
+    case AV_SAMPLE_FMT_U8:
+        exinfo.format = FMOD_SOUND_FORMAT_PCM8;
+        ltpcmlen = 1U;
+        break;
+    case AV_SAMPLE_FMT_S16:
+        exinfo.format = FMOD_SOUND_FORMAT_PCM16;
+        ltpcmlen = 2U;
+        break;
+    case AV_SAMPLE_FMT_S32:
+        exinfo.format = FMOD_SOUND_FORMAT_PCM32;
+        ltpcmlen = 4U;
+        break;
+    case AV_SAMPLE_FMT_FLT:
+        exinfo.format = FMOD_SOUND_FORMAT_PCMFLOAT;
+        ltpcmlen = 4U;
+        break;
+    default:
+        exinfo.format = FMOD_SOUND_FORMAT_NONE;
+        break;
+    }
+    exinfo.cbsize = sizeof(FMOD_CREATESOUNDEXINFO);
+    exinfo.defaultfrequency = player->audio_ctx_.out_sample_rate;
+    exinfo.decodebuffersize = player->audio_ctx_.out_nb_samples;
+    exinfo.length = player->audio_ctx_.out_sample_rate * ltpcmlen * player->audio_ctx_.out_nb_channels * 5; // '5'代表5秒
+    exinfo.numchannels = player->audio_ctx_.out_nb_channels;
+    exinfo.pcmreadcallback = audio_callback;
+    exinfo.userdata = player;
+    // SoundManager *sound = new SoundManager(32);
+    sound.loadSound(NULL, "bgm", FMOD_CREATESTREAM | FMOD_OPENUSER | FMOD_LOOP_NORMAL, &exinfo);
+    sound.playSound("bgm", 0);
+#elif defined(USE_SDL_AUDIO)
+    // SDL音频参数
+    SDL_AudioSpec spec;
+    spec.freq = player->audio_ctx_.out_sample_rate;
+    spec.channels = player->audio_ctx_.out_nb_channels;
+    spec.silence = 0;
+    spec.samples = player->audio_ctx_.out_nb_samples;
+    spec.callback = audio_callback;
+    spec.userdata = player;
+    switch (player->audio_ctx_.out_sample_fmt)
+    {
+    case AV_SAMPLE_FMT_S16:
+        spec.format = AUDIO_S16SYS;
+        break;
+    case AV_SAMPLE_FMT_S32:
+        spec.format = AUDIO_S32SYS;
+        break;
+    case AV_SAMPLE_FMT_FLT:
+        spec.format = AUDIO_F32SYS;
+        break;
+    default:
+        break;
+    }
+    // 打开SDL音频
+    if (SDL_OpenAudio(&spec, NULL) < 0)
+    {
+        printf("can't open audio.\n");
+        return;
+    }
+    // 设置为0表示开始播放
+    SDL_PauseAudio(0);
+#endif
 }
 
 VideoPlayer::VideoPlayer(const char *_filename)
@@ -142,8 +337,6 @@ void VideoPlayer::init_ffmpeg(const char *customPath)
     this->audio_ctx_.out_nb_samples = 1024;
     this->audio_ctx_.out_nb_channels = audio_codec_ctx->ch_layout.nb_channels;
     this->audio_ctx_.out_sample_rate = audio_codec_ctx->sample_rate;
-    if (audio_codec_ctx->sample_rate > this->audio_ctx_.out_sample_rate)
-        this->audio_ctx_.out_sample_rate = audio_codec_ctx->sample_rate;
     this->audio_ctx_.out_ch_layout = AV_CHANNEL_LAYOUT_STEREO;
     this->audio_ctx_.out_sample_fmt = AV_SAMPLE_FMT_S32;
     AVChannelLayout in_ch_layout = {};
@@ -163,15 +356,6 @@ void VideoPlayer::upload_frame(AVFrame *frame)
     {
         return;
     }
-
-    // // 检查帧格式变化
-    // if (last_uploaded_frame &&
-    //     (frame->width != last_uploaded_frame->width ||
-    //      frame->height != last_uploaded_frame->height ||
-    //      frame->format != last_uploaded_frame->format))
-    // {
-    //     init_gl_resources(frame->width, frame->height); // TODO:之前的纹理的清理
-    // }
 
     // 处理硬件加速表面
     AVFrame *upload_frame = frame;
@@ -245,58 +429,13 @@ void VideoPlayer::upload_plane(Texture &tex, GLenum format,
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 }
 
-void VideoPlayer::audio_callback(void *userdata, Uint8 *stream, int len)
-{
-    if (len == 0)
-        return;
-    VideoPlayer *player = static_cast<VideoPlayer *>(userdata);
-    auto &ac = player->audio_ctx_;
-
-    // 清空目标缓冲区
-    SDL_memset(stream, 0, len);
-    // 从队列获取音频帧
-    AVFrame *frame = nullptr;
-    if (!player->audio_frame_quene.pop(frame, 5))
-    { // 5ms超时
-        return;
-    }
-
-    uint8_t *out_data[1] = {ac.buffer.data()};
-    ac.buffer.resize(ac.buffer.capacity());
-    swr_convert(ac.swr_ctx, out_data, player->audio_ctx_.out_nb_samples,
-                const_cast<const uint8_t **>(frame->data),
-                frame->nb_samples);
-    // 更新同步时钟（加权平均）
-    static int64_t lastframepts = 0;
-    double frame_pts = lastframepts * av_q2d(player->audio_time_base);
-    lastframepts = frame->pts;
-    // 获取当前时间点
-    auto now = std::chrono::high_resolution_clock::now();
-    // 将时间点转换为自纪元（epoch）以来的纳秒数
-    const int64_t now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
-    player->sync_clock.update_audio(frame_pts, now_ns); // 平滑系数0.2
-
-    av_frame_free(&frame);
-    // 计算可拷贝数据量
-    const int copy_bytes = (ac.buffer.size() < len ? ac.buffer.size() : len);
-    if (copy_bytes > 0)
-    {
-        // 混合到输出流
-        SDL_MixAudioFormat(stream, ac.buffer.data(), ac.sdl_audio_format,
-                           copy_bytes, SDL_MIX_MAXVOLUME);
-
-        // 更新缓冲区
-        ac.buffer.erase(ac.buffer.begin(), ac.buffer.begin() + copy_bytes);
-        stream += copy_bytes;
-        len -= copy_bytes;
-    }
-}
-
 void VideoPlayer::present_frame()
 {
     // 执行实际绘制命令
     if (rendererShader)
+    {
         renderer(*this->rendererShader);
+    }
 
     // 错误检查
     checkGLError();
@@ -387,59 +526,20 @@ double VideoPlayer::calculate_avg_render_time() const
 
 void VideoPlayer::render_video_frame()
 {
-    constexpr double MAX_AHEAD = 0.001;      // 最大允许提前10ms
-    constexpr double MAX_BEHIND = 0.100;     // 最大允许落后100ms
-    constexpr double SYNC_THRESHOLD = 0.020; // 同步阈值20ms
-
-    double audio_clock = sync_clock.get_master_clock();
-    double diff = last_video_pts_ - audio_clock;
-
-    // 动态调整阈值（基于最近10帧的渲染性能）
-    double avg_render_time = calculate_avg_render_time();
-    double dynamic_threshold = std::clamp(
-        SYNC_THRESHOLD + avg_render_time * 2.0,
-        0.005, // 最小5ms
-        0.050  // 最大50ms
-    );
-
-    if (diff > MAX_AHEAD)
-    {
-        // 超前过多：精确等待
-        double sleep_time = diff;
-        precise_sleep(sleep_time);
-        return;
-    }
-
     AVFrame *frame = nullptr;
+
     if (!video_frame_queue.pop(frame, 1000))
     {
         return;
     }
 
-    if (diff < -MAX_BEHIND)
-    {
-        // 严重落后：直接丢弃
-        stats_.dropped_frames++;
-        // av_frame_free(&frame);
-        // return;
-    }
-    else if (diff < -dynamic_threshold)
-    {
-        // 轻微落后：显示但记录
-        stats_.late_frames++;
-        upload_frame(&(*frame));
-        present_frame();
-    }
-    else
-    {
-        // 在同步范围内：立即显示
-        upload_frame(&(*frame));
-        present_frame();
-    }
+    video_pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(video_time_base);
 
-    // // 更新时钟预测模型
-    // update_clock_prediction(diff);
-    last_video_pts_ = frame->pts * av_q2d(video_time_base);
+    while (video_pts > audio_pts)
+        ;
+    // 在同步范围内：立即显示
+    upload_frame(&(*frame));
+    present_frame();
     av_frame_free(&frame);
 }
 
@@ -448,13 +548,17 @@ void VideoPlayer::demux_loop()
 {
     AVPacket *packet = av_packet_alloc();
     AVFrame *vframe = av_frame_alloc();
-    AVFrame *hw_vFrame = av_frame_alloc();
     AVFrame *aFrame = av_frame_alloc();
-    AVFrame *dstFrame = NULL;
+    AVFrame *dstFrame = nullptr;
     while (running)
     {
         if (av_read_frame(fmt_ctx, packet) < 0)
+        {
+            av_packet_free(&packet);
+            av_frame_free(&vframe);
+            av_frame_free(&aFrame);
             break;
+        }
 
         // 分支处理前克隆数据包
         if (packet->stream_index == vIndex)
@@ -480,17 +584,22 @@ void VideoPlayer::demux_loop()
                     break;
                 }
 
-                // 处理硬件加速表面
-                if (hwDecode)
+                // 从GPU显存复制到CPU内存
+                if (vframe->format == hw_pix_fmt)
                 {
-                    // 从GPU显存复制到CPU内存
+                    // 这里hw_vFrame一定要重新分配内存
+                    AVFrame *hw_vFrame = av_frame_alloc();
                     if (av_hwframe_transfer_data(hw_vFrame, vframe, 0) < 0)
                     {
                         std::cerr << "硬件帧转换失败" << std::endl;
                         continue;
                     }
+                    hw_vFrame->pts = vframe->pts;
+                    hw_vFrame->pkt_dts = vframe->pkt_dts;
+                    hw_vFrame->duration = vframe->duration;
+                    hw_vFrame->best_effort_timestamp = vframe->best_effort_timestamp;
                     dstFrame = av_frame_clone(hw_vFrame);
-                    dstFrame->pts = vframe->pts;
+                    av_frame_free(&hw_vFrame);
                 }
                 else
                 {
@@ -506,7 +615,6 @@ void VideoPlayer::demux_loop()
 
             if (ret < 0)
             {
-                handle_decode_error(ret);
                 continue;
             }
 
@@ -520,116 +628,20 @@ void VideoPlayer::demux_loop()
                 }
                 else if (ret < 0)
                 {
-                    handle_decode_error(ret);
                     break;
                 }
 
                 dstFrame = av_frame_clone(aFrame);
 
-                audio_frame_quene.push(std::move(dstFrame));
+                this->audio_frame_quene.push(std::move(dstFrame));
             }
         }
         av_packet_unref(packet);
     }
-    av_packet_free(&packet);
-    av_frame_free(&vframe);
-    av_frame_free(&hw_vFrame);
-    av_frame_free(&aFrame);
 }
-
-// void VideoPlayer::video_decode_loop()
-// {
-//     AVPacket *raw_pkt = av_packet_alloc();
-//     AVFrame *hw_frame = av_frame_alloc();
-//     AVFrame *sw_frame = av_frame_alloc();
-//     int ret = 0;
-
-//     while (running)
-//     {
-//         // 带超时的包获取（防止无限阻塞）
-//         AVPacket *pkt = nullptr;
-//         if (!video_packet_queue.pop(pkt, 5))
-//         { // 50ms超时
-//             continue;
-//         }
-
-//         // 发送数据包到解码器
-//         // std::lock_guard<std::mutex> lock(decode_mux);
-//         ret = avcodec_send_packet(video_codec_ctx, pkt);
-//         if (ret < 0)
-//         {
-//             handle_decode_error(ret);
-//             continue;
-//         }
-
-//         // 接收解码后的帧
-//         while (ret >= 0)
-//         {
-//             ret = avcodec_receive_frame(video_codec_ctx, hw_frame);
-//             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-//             {
-//                 break;
-//             }
-//             else if (ret < 0)
-//             {
-//                 handle_decode_error(ret);
-//                 break;
-//             }
-
-//             // 处理硬件加速表面
-//             if (hw_frame->format == hw_pix_fmt)
-//             {
-//                 // 从GPU显存复制到CPU内存
-//                 if (av_hwframe_transfer_data(sw_frame, hw_frame, 0) < 0)
-//                 {
-//                     std::cerr << "硬件帧转换失败" << std::endl;
-//                     continue;
-//                 }
-//                 sw_frame->pts = hw_frame->pts;
-//             }
-//             else
-//             {
-//                 sw_frame = av_frame_clone(hw_frame);
-//             }
-
-//             // 将帧放入渲染队列
-//             if (sw_frame && this->video_codec_ctx->width == sw_frame->width && !video_frame_queue.push(ScopedAVFrame(sw_frame)))
-//             {
-//                 // ++m_stats.dropped_frames_queue_full;
-//                 av_frame_unref(sw_frame);
-//             }
-
-//             av_frame_unref(hw_frame);
-//         }
-
-//         // // 定期更新解码器状态
-//         // if (++m_decode_counter % 100 == 0)
-//         // {
-//         //     check_decoder_health();
-//         // }
-//     }
-
-//     // 刷新解码器
-//     avcodec_send_packet(video_codec_ctx, nullptr);
-//     while (ret >= 0)
-//     {
-//         ret = avcodec_receive_frame(video_codec_ctx, hw_frame);
-//         if (ret == AVERROR_EOF)
-//             break;
-//         // 处理剩余帧...
-//     }
-
-//     // 清理资源
-//     av_packet_free(&raw_pkt);
-//     av_frame_free(&hw_frame);
-//     av_frame_free(&sw_frame);
-//     av_buffer_unref(&video_codec_ctx->hw_device_ctx);
-// }
 
 void VideoPlayer::handle_decode_error(int err)
 {
-    constexpr int MAX_ERROR_COUNT = 10;
-    static int error_count = 0;
 
     char err_buf[AV_ERROR_MAX_STRING_SIZE];
     av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, err);
@@ -644,15 +656,16 @@ void VideoPlayer::renderer(Shader &shader)
     // // 确保在OpenGL上下文线程
     // SDL_GL_MakeCurrent(window, gl_context);
 
-    // // 使用同步对象避免过早交换
-    // static GLsync sync_objects[3] = {0};
-    // static int sync_index = 0;
+    // 使用同步对象避免过早交换
+    static GLsync sync_objects[3] = {0};
+    static int sync_index = 0;
 
-    // if (sync_objects[sync_index])
-    // {
-    //     glClientWaitSync(sync_objects[sync_index], 0, GL_TIMEOUT_IGNORED);
-    //     glDeleteSync(sync_objects[sync_index]);
-    // }
+    if (sync_objects[sync_index])
+    {
+        glClientWaitSync(sync_objects[sync_index], 0, GL_TIMEOUT_IGNORED);
+        glDeleteSync(sync_objects[sync_index]);
+    }
+    setFPS(window);
     shader.Use();
     static int isFirst = 1;
     if (isFirst)
@@ -677,12 +690,16 @@ void VideoPlayer::renderer(Shader &shader)
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
 
-    // // 插入新的同步对象
-    // sync_objects[sync_index] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-    // sync_index = (sync_index + 1) % 3;
+    // 插入新的同步对象
+    sync_objects[sync_index] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    sync_index = (sync_index + 1) % 3;
 
     // 交换缓冲区（带垂直同步）
+#ifdef USE_SDL_WINDOW
     SDL_GL_SwapWindow(window);
+#elif defined(USE_GLFW_WINDOW)
+    glfwSwapBuffers(window);
+#endif
 }
 
 //=============== 主事件循环 ===============
@@ -694,6 +711,7 @@ void VideoPlayer::run()
         fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
         exit(1);
     }
+#ifdef USE_SDL_WINDOW
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
@@ -713,6 +731,36 @@ void VideoPlayer::run()
     // 使能垂直同步
     SDL_GL_SetSwapInterval(1);
 
+#elif defined(USE_GLFW_WINDOW)
+
+    glfwInit();
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+#endif
+    // glfwWindowHint(GLFW_RESIZABLE, false);
+    window = glfwCreateWindow(1280, 720, "Media Player", NULL, NULL);
+    if (window == NULL)
+    {
+        printf("failed to create window\n");
+        glfwTerminate();
+        return;
+    }
+    // // 获取主显示器的视频模式
+    // const GLFWvidmode *mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+    // // 切换到全屏模式
+    // glfwSetWindowMonitor(window, glfwGetPrimaryMonitor(), 0, 0, mode->width, mode->height, mode->refreshRate);
+    glfwMakeContextCurrent(window);
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+    {
+        printf("ERROR::GLAD failed to load the proc\n");
+        return;
+    }
+    // glfwSetFramebufferSizeCallback(window, framesizecallback);
+#endif
+
     // 编译着色器
     nv12Shader = ResourceManager::loadShader("../shader/nv12.vert", "../shader/nv12.frag", NULL, "nv12");
     nv12Shader.Use().unfm1i("y_tex", 0);
@@ -730,48 +778,22 @@ void VideoPlayer::run()
     // 创建工作线程
     std::thread demux_thread([this]
                              { demux_loop(); });
-    // std::thread video_thread([this]
-    //                          { video_decode_loop(); });
+    // std::thread au_demux_thread(au_demux_loop, this->filename, this);
 
-    // SDL音频参数
-    SDL_AudioSpec spec;
-    spec.freq = this->audio_ctx_.out_sample_rate;
-    spec.channels = audio_codec_ctx->ch_layout.nb_channels;
-    spec.silence = 0;
-    spec.samples = this->audio_ctx_.out_nb_samples;
-    spec.callback = audio_callback;
-    spec.userdata = this; // 这里要使用
-    switch (this->audio_ctx_.out_sample_fmt)
-    {
-    case AV_SAMPLE_FMT_S16:
-        spec.format = AUDIO_S16SYS;
-        break;
-    case AV_SAMPLE_FMT_S32:
-        spec.format = AUDIO_S32SYS;
-        break;
-    case AV_SAMPLE_FMT_FLT:
-        spec.format = AUDIO_F32SYS;
-        break;
-    default:
-        break;
-    }
-    this->audio_ctx_.sdl_audio_format = spec.format;
-    // 打开SDL音频
-    if (SDL_OpenAudio(&spec, NULL) < 0)
-    {
-        throw std::runtime_error("无法打开音频设备");
-    }
-    SDL_PauseAudio(0);
+    audio_play(this);
 
     // 主渲染循环
     SDL_Event event;
-    double last_render_time;
-    int target_fps = (float)fmt_ctx->streams[vIndex]->avg_frame_rate.num / fmt_ctx->streams[vIndex]->avg_frame_rate.den + 0.5f;
     while (running)
     {
         // 处理窗口事件
+#ifdef USE_SDL_WINDOW
         SDL_PollEvent(&event);
-        // {
+#elif defined(USE_GLFW_WINDOW)
+        glfwPollEvents();
+#endif
+
+#ifdef USE_SDL_WINDOW
         if (event.type == SDL_QUIT)
         {
             running = false;
@@ -781,15 +803,26 @@ void VideoPlayer::run()
             if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
                 glViewport(0, 0, event.window.data1, event.window.data2);
         }
-        // }
+#elif defined(USE_GLFW_WINDOW)
+        if (glfwWindowShouldClose(window))
+        {
+            running = false;
+            break;
+        }
+#endif
 
         // 执行视频渲染
         render_video_frame();
+
+#ifdef USE_FMOD
+        sound.update();
+#endif
     }
 
     // 等待线程结束
     running = false;
     demux_thread.join();
+    // au_demux_thread.join();
     // video_thread.join();
     SDL_CloseAudio();
     SDL_Quit();
