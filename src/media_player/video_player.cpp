@@ -39,7 +39,7 @@ static enum AVPixelFormat custom_get_format(AVCodecContext *vCodecCtx, const enu
     return AV_PIX_FMT_NONE;
 }
 
-#ifdef USE_FMOD
+#ifdef USE_FMOD_AUDIO
 FMOD_RESULT F_CALLBACK audio_callback(FMOD_SOUND *sound, void *data, unsigned int len)
 {
     if (len == 0)
@@ -73,7 +73,6 @@ FMOD_RESULT F_CALLBACK audio_callback(FMOD_SOUND *sound, void *data, unsigned in
     const int64_t now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
     player->sync_clock.update_audio(frame_pts, now_ns); // 平滑系数0.2
     audio_pts = frame->pts * av_q2d(player->audio_time_base);
-    // audio_pts = frame->pts / 1000000.0;
 
     av_frame_free(&frame);
     // 计算可拷贝数据量
@@ -140,13 +139,13 @@ static void audio_callback(void *userdata, Uint8 *stream, int len)
 }
 #endif
 
-#ifdef USE_FMOD
+#ifdef USE_FMOD_AUDIO
 static SoundManager sound(32);
 #endif
 
 static void audio_play(VideoPlayer *player)
 {
-#ifdef USE_FMOD
+#ifdef USE_FMOD_AUDIO
     // 设置FMOD参数
     FMOD_CREATESOUNDEXINFO exinfo;
     memset(&exinfo, 0, sizeof(FMOD_CREATESOUNDEXINFO));
@@ -215,6 +214,11 @@ static void audio_play(VideoPlayer *player)
     // 设置为0表示开始播放
     SDL_PauseAudio(0);
 #endif
+}
+
+static void framesizecallback(GLFWwindow *window, int width, int height)
+{
+    glViewport(0, 0, width, height);
 }
 
 VideoPlayer::VideoPlayer(const char *_filename)
@@ -741,7 +745,7 @@ void VideoPlayer::run()
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
     // glfwWindowHint(GLFW_RESIZABLE, false);
-    window = glfwCreateWindow(1280, 720, "Media Player", NULL, NULL);
+    window = glfwCreateWindow(2560, 1440, "Media Player", NULL, NULL);
     if (window == NULL)
     {
         printf("failed to create window\n");
@@ -758,7 +762,7 @@ void VideoPlayer::run()
         printf("ERROR::GLAD failed to load the proc\n");
         return;
     }
-    // glfwSetFramebufferSizeCallback(window, framesizecallback);
+    glfwSetFramebufferSizeCallback(window, framesizecallback);
 #endif
 
     // 编译着色器
@@ -814,7 +818,7 @@ void VideoPlayer::run()
         // 执行视频渲染
         render_video_frame();
 
-#ifdef USE_FMOD
+#ifdef USE_FMOD_AUDIO
         sound.update();
 #endif
     }

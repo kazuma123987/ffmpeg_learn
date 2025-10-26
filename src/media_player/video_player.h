@@ -97,8 +97,8 @@ public:
     // 队列
     // SafeQueue<AVPacket *> video_packet_queue{30}; // 最多缓存30个视频包
     // SafeQueue<AVPacket *> audio_packet_queue{100};   // 最多缓存100个音频包
-    SafeQueue<AVFrame *> video_frame_queue{100}; // 最多缓存100帧视频
-    SafeQueue<AVFrame *> audio_frame_quene{200}; // 
+    SafeQueue<AVFrame *> video_frame_queue{60}; // 最多缓存60帧视频
+    SafeQueue<AVFrame *> audio_frame_quene{300}; // 
     AVRational video_time_base, audio_time_base;
 
     // 线程控制
