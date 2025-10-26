@@ -78,7 +78,7 @@ public:
     VideoPlayer(const char *_filename);
     double calculate_dynamic_threshold() const;
     void init_gl_resources(int width, int height);
-    void init_ffmpeg(const char *customPath);
+    int init_ffmpeg(const char *customPath);
     void upload_frame(AVFrame *frame);
     void upload_plane(Texture &tex, GLenum format,
                       uint8_t *data, int line_size,
@@ -93,6 +93,7 @@ public:
     void video_decode_loop();
     void handle_decode_error(int err);
     void renderer(Shader &shader);
+    int initResource();
     void run();
     // 队列
     // SafeQueue<AVPacket *> video_packet_queue{30}; // 最多缓存30个视频包

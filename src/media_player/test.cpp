@@ -10,8 +10,8 @@ int main(int argc, char *argv[])
     if (argc < 2)
     {
         std::cerr << "Usage: " << argv[0] << " <video_file>" << std::endl;
-        // video_path = "../res/360°.mp4"; 
-        video_path = "../res/tera.mp4"; 
+        video_path = "../res/360°.mp4"; 
+        // video_path = "../res/tera.mp4"; 
     }
     else
     {
@@ -20,6 +20,11 @@ int main(int argc, char *argv[])
 
     // 创建播放器实例
     VideoPlayer player(video_path.c_str());
+    if(player.initResource()<0)
+    {
+        getchar();
+        return -1;    
+    }
 
     try
     {

@@ -8,7 +8,7 @@ static AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
 std::mutex decode_mux;
 
 static bool hwDecode = true;
-static double video_pts, audio_pts;
+static volatile double video_pts, audio_pts;
 void setFPS(void *window)
 {
     static int fpsCount = 0;
@@ -253,7 +253,7 @@ void VideoPlayer::init_gl_resources(int width, int height)
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 }
 
-void VideoPlayer::init_ffmpeg(const char *customPath)
+int VideoPlayer::init_ffmpeg(const char *customPath)
 {
     // 为format上下文分配空间
     fmt_ctx = avformat_alloc_context();
@@ -261,7 +261,7 @@ void VideoPlayer::init_ffmpeg(const char *customPath)
     if (avformat_open_input(&fmt_ctx, customPath, NULL, NULL))
     {
         printf("failed to open the video:%s\n", customPath);
-        return;
+        return -1;
     }
 
     // 查找流信息
@@ -293,7 +293,7 @@ void VideoPlayer::init_ffmpeg(const char *customPath)
     if (hwType == AV_HWDEVICE_TYPE_NONE)
     {
         printf("failed to find the %s device\n", hwtypename);
-        return;
+        return -2;
     }
     // 2.获取硬件像素格式
     for (int i = 0;; i++)
@@ -351,6 +351,7 @@ void VideoPlayer::init_ffmpeg(const char *customPath)
         &audio_codec_ctx->ch_layout, audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate, 0, NULL);
     swr_init(this->audio_ctx_.swr_ctx);
     this->audio_ctx_.buffer.resize(av_samples_get_buffer_size(NULL, this->audio_ctx_.out_nb_channels, this->audio_ctx_.out_nb_samples, this->audio_ctx_.out_sample_fmt, 1));
+    return 0;
 }
 
 void VideoPlayer::upload_frame(AVFrame *frame)
@@ -706,14 +707,14 @@ void VideoPlayer::renderer(Shader &shader)
 #endif
 }
 
-//=============== 主事件循环 ===============
-void VideoPlayer::run()
+int VideoPlayer::initResource()
 {
-
+    int ret = 0;
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO))
     {
         fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
-        exit(1);
+        ret = -1;
+        goto FAIL;
     }
 #ifdef USE_SDL_WINDOW
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
@@ -724,13 +725,15 @@ void VideoPlayer::run()
     if (!window)
     {
         fprintf(stderr, "\nSDL: could not set video mode:%s - exiting\n", SDL_GetError());
-        exit(1);
+        ret = -2;
+        goto FAIL;
     }
     gl_context = SDL_GL_CreateContext(window);
     if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress))
     {
         printf("ERROR::GLAD failed to load the proc\n");
-        return;
+        ret = -3;
+        goto FAIL;
     }
     // 使能垂直同步
     SDL_GL_SetSwapInterval(1);
@@ -750,7 +753,8 @@ void VideoPlayer::run()
     {
         printf("failed to create window\n");
         glfwTerminate();
-        return;
+        ret = -2;
+        goto FAIL;
     }
     // // 获取主显示器的视频模式
     // const GLFWvidmode *mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
@@ -760,7 +764,8 @@ void VideoPlayer::run()
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     {
         printf("ERROR::GLAD failed to load the proc\n");
-        return;
+        ret = -3;
+        goto FAIL;
     }
     glfwSetFramebufferSizeCallback(window, framesizecallback);
 #endif
@@ -775,10 +780,20 @@ void VideoPlayer::run()
     yuv420Shader.unfm1i("v_tex", 2);
 
     // 初始化FFmpeg
-    init_ffmpeg(this->filename);
+    if(init_ffmpeg(this->filename)<0)
+    {
+        ret = -4;
+        goto FAIL;
+    }
     // 初始化纹理
     init_gl_resources(video_codec_ctx->width, video_codec_ctx->height);
+FAIL:
+    return ret;
+}
 
+//=============== 主事件循环 ===============
+void VideoPlayer::run()
+{
     // 创建工作线程
     std::thread demux_thread([this]
                              { demux_loop(); });
@@ -787,11 +802,11 @@ void VideoPlayer::run()
     audio_play(this);
 
     // 主渲染循环
-    SDL_Event event;
     while (running)
     {
         // 处理窗口事件
 #ifdef USE_SDL_WINDOW
+        SDL_Event event;
         SDL_PollEvent(&event);
 #elif defined(USE_GLFW_WINDOW)
         glfwPollEvents();
