@@ -29,8 +29,8 @@ public:
                            { return queue_.size() < max_size_; }); // 队列满时休眠，等待其他线程pop quene时唤醒
         }
 
-        queue_.emplace(std::forward<T>(item));  // 完美转发引用，并使用引用的变量直接在已分配的队列数组中构建对象(避免无意义的临时对象的构造和内存拷贝)
-        not_empty_.notify_one();                // 队列push后非空，唤醒其他线程工作以处理非空线程
+        queue_.emplace(std::forward<T>(item)); // 完美转发引用，并使用引用的变量直接在已分配的队列数组中构建对象(避免无意义的临时对象的构造和内存拷贝)
+        not_empty_.notify_one();               // 队列push后非空，唤醒其他线程工作以处理非空线程
         return true;
     }
 
@@ -54,7 +54,7 @@ public:
         }
 
         item = std::move(queue_.front()); // 队列最前面的对象的内容搬家到对象item中(避免内存拷贝)
-        queue_.pop();                     // 队列最前面的对象出队           
+        queue_.pop();                     // 队列最前面的对象出队
         not_full_.notify_one();
         return true;
     }
@@ -72,6 +72,20 @@ public:
         queue_.pop();
         not_full_.notify_one();
         return true;
+    }
+
+    void clear()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        while (!queue_.empty())
+        {
+            T item = queue_.front();
+            if (item)
+                av_frame_free(&item); // 释放AVFrame
+            queue_.pop();
+        }
+        not_full_.notify_one();
+        not_empty_.notify_one();
     }
 
     bool empty() const

@@ -8,7 +8,7 @@ static AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
 std::mutex decode_mux;
 
 static bool hwDecode = true;
-static volatile double video_pts, audio_pts;
+static std::atomic<double> video_pts(0.0), audio_pts(0.0);
 void setFPS(void *window)
 {
     static int fpsCount = 0;
@@ -73,6 +73,7 @@ FMOD_RESULT F_CALLBACK audio_callback(FMOD_SOUND *sound, void *data, unsigned in
     const int64_t now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
     player->sync_clock.update_audio(frame_pts, now_ns); // 平滑系数0.2
     audio_pts = frame->pts * av_q2d(player->audio_time_base);
+    player->video_cv.notify_one();
 
     av_frame_free(&frame);
     // 计算可拷贝数据量
@@ -121,6 +122,7 @@ static void audio_callback(void *userdata, Uint8 *stream, int len)
     const int64_t now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
     player->sync_clock.update_audio(frame_pts, now_ns); // 平滑系数0.2
     audio_pts = frame->pts * av_q2d(player->audio_time_base);
+    player->video_cv.notify_one();
 
     av_frame_free(&frame);
     // 计算可拷贝数据量
@@ -366,7 +368,7 @@ void VideoPlayer::upload_frame(AVFrame *frame)
     AVFrame *upload_frame = frame;
 
     // 使用双PBO异步上传
-    int next_pbo = (pbo_index.load() + 1) % 2;
+    int next_pbo = (pbo_index + 1) % 2;
 
     // 上传Y分量
     upload_plane(image_Y, GL_RED, upload_frame->data[0],
@@ -401,7 +403,7 @@ void VideoPlayer::upload_frame(AVFrame *frame)
         throw std::runtime_error("Unsupported pixel format");
     }
 
-    pbo_index.store(next_pbo);
+    pbo_index= next_pbo;
 
     if (upload_frame != frame)
     {
@@ -423,6 +425,11 @@ void VideoPlayer::upload_plane(Texture &tex, GLenum format,
     // 映射PBO内存
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
     uint8_t *pbo_ptr = static_cast<uint8_t *>(glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, line_size * height, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT));
+
+    if(pbo_ptr == nullptr)
+    {
+        return;
+    }
 
     memcpy(pbo_ptr, data, line_size * height);
 
@@ -540,8 +547,12 @@ void VideoPlayer::render_video_frame()
 
     video_pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(video_time_base);
 
-    while (video_pts > audio_pts)
-        ;
+    std::unique_lock<std::mutex> video_lock(this->video_mutex);
+    this->video_cv.wait(video_lock,
+    [this]()
+    {
+        return video_pts <= audio_pts || !running;
+    });
     // 在同步范围内：立即显示
     upload_frame(&(*frame));
     present_frame();
@@ -559,9 +570,6 @@ void VideoPlayer::demux_loop()
     {
         if (av_read_frame(fmt_ctx, packet) < 0)
         {
-            av_packet_free(&packet);
-            av_frame_free(&vframe);
-            av_frame_free(&aFrame);
             break;
         }
 
@@ -597,6 +605,7 @@ void VideoPlayer::demux_loop()
                     if (av_hwframe_transfer_data(hw_vFrame, vframe, 0) < 0)
                     {
                         std::cerr << "硬件帧转换失败" << std::endl;
+                        av_frame_free(&hw_vFrame);
                         continue;
                     }
                     hw_vFrame->pts = vframe->pts;
@@ -643,6 +652,9 @@ void VideoPlayer::demux_loop()
         }
         av_packet_unref(packet);
     }
+    av_packet_free(&packet);
+    av_frame_free(&vframe);
+    av_frame_free(&aFrame);
 }
 
 void VideoPlayer::handle_decode_error(int err)
@@ -710,12 +722,14 @@ void VideoPlayer::renderer(Shader &shader)
 int VideoPlayer::initResource()
 {
     int ret = 0;
+#if defined(USE_SDL_WINDOW) || defined(USE_SDL_AUDIO)
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO))
     {
         fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
         ret = -1;
         goto FAIL;
     }
+#endif
 #ifdef USE_SDL_WINDOW
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
@@ -840,9 +854,19 @@ void VideoPlayer::run()
 
     // 等待线程结束
     running = false;
+    this->audio_frame_quene.clear();
+    this->video_frame_queue.clear();
     demux_thread.join();
     // au_demux_thread.join();
     // video_thread.join();
+    avformat_free_context(this->fmt_ctx);
+    swr_free(&this->audio_ctx_.swr_ctx);
+    avcodec_free_context(&this->audio_codec_ctx);
+    avcodec_free_context(&this->video_codec_ctx);
+#ifdef USE_SDL_AUDIO
     SDL_CloseAudio();
+#endif
+#if defined(USE_SDL_WINDOW) || defined(USE_SDL_AUDIO)
     SDL_Quit();
+#endif
 }

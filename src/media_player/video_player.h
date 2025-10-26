@@ -98,19 +98,21 @@ public:
     // 队列
     // SafeQueue<AVPacket *> video_packet_queue{30}; // 最多缓存30个视频包
     // SafeQueue<AVPacket *> audio_packet_queue{100};   // 最多缓存100个音频包
-    SafeQueue<AVFrame *> video_frame_queue{60}; // 最多缓存60帧视频
-    SafeQueue<AVFrame *> audio_frame_quene{300}; // 
+    SafeQueue<AVFrame *> video_frame_queue{10}; // 最多缓存10帧视频
+    SafeQueue<AVFrame *> audio_frame_quene{30}; // 最多缓存30帧音频
     AVRational video_time_base, audio_time_base;
 
     // 线程控制
-    std::atomic<bool> running{true};
+    std::atomic<bool> volatile running{true};
     // std::thread demux_thread;
     // std::thread video_decode_thread;
     // std::thread audio_play_thread;
 
     // 同步对象
     std::mutex audio_mutex;
+    std::mutex video_mutex;
     std::condition_variable audio_cv;
+    std::condition_variable video_cv;
     SyncClock sync_clock;
 
     AudioContext audio_ctx_;
