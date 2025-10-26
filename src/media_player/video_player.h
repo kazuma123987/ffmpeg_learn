@@ -80,8 +80,8 @@ public:
     int initResource();
     void run();
     // 队列
-    SafeQueue<AVFrame *> video_frame_queue{10}; // 最多缓存10帧视频
-    SafeQueue<AVFrame *> audio_frame_quene{30}; // 最多缓存30帧音频
+    SafeQueue<AVFrame *> video_frame_queue{100}; // 最多缓存100帧视频
+    SafeQueue<AVFrame *> audio_frame_quene{300}; // 最多缓存300帧音频
     AVRational video_time_base, audio_time_base;
 
     // 线程控制

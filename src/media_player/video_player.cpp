@@ -325,16 +325,27 @@ void VideoPlayer::init_gl_resources(AVFrame *frame, AVPixelFormat pix_fmt)
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 }
 
+AVDictionary *pAVDictionary = nullptr;		   // ffmpeg数据字典，用于配置一些编码器属性等
+
 int VideoPlayer::init_ffmpeg(const char *customPath)
 {
+    // 网络初始化
+    avformat_network_init();
     // 为format上下文分配空间
     fmt_ctx = avformat_alloc_context();
     // 打开视频文件
-    if (avformat_open_input(&fmt_ctx, customPath, NULL, NULL))
+    if (avformat_open_input(&fmt_ctx, customPath, NULL, &pAVDictionary))
     {
         printf("failed to open the video:%s\n", customPath);
         return -1;
     }
+
+    // 设置网络参数
+    av_dict_set(&pAVDictionary, "probesize", "4", 0);
+    av_dict_set(&pAVDictionary, "buffer_size", "1024000", 0); // 设置缓存大小 1024000byte
+    av_dict_set(&pAVDictionary, "stimeout", "2000000", 0);	  // 设置超时时间 20s    20000000
+    av_dict_set(&pAVDictionary, "max_delay", "30000000", 0);  // 设置最大延时 3s,30000000
+    av_dict_set(&pAVDictionary, "rtsp_transport", "udp", 0);  // 设置打开方式 tcp/udp
 
     // 查找流信息
     if (avformat_find_stream_info(fmt_ctx, NULL) < 0)
@@ -401,7 +412,7 @@ int VideoPlayer::init_ffmpeg(const char *customPath)
     // 赋值编解码上下文并打开编解码器
     AVCodecParameters *vCodecPar = fmt_ctx->streams[vIndex]->codecpar;
     avcodec_parameters_to_context(video_codec_ctx, vCodecPar);
-    avcodec_open2(video_codec_ctx, vCodec, NULL);
+    avcodec_open2(video_codec_ctx, vCodec, &pAVDictionary);
 
     // open decoder
     audio_codec_ctx = avcodec_alloc_context3(aCodec);

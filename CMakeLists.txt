@@ -19,9 +19,9 @@ link_libraries(avcodec.dll avformat.dll swscale.dll avfilter.dll
 add_library(util ${UTIL})
 add_executable(media_player ${SOURCES} ${GLAD})
 add_executable(ffplay ${FFPLAY_SRC})
-add_executable(video_demo ${VIDEO_DEMO})
+add_executable(video_demo ${VIDEO_DEMO} ${GLAD})
 target_link_libraries(media_player PRIVATE glfw3 SDL2.dll fmod_vc.lib
                                            util)
 target_link_libraries(ffplay PRIVATE glfw3 SDL2.dll util )
 
-target_link_libraries(video_demo PRIVATE glfw3 SDL2.dll util )
+target_link_libraries(video_demo PRIVATE glfw3 SDL2.dll util d3d11 dxgi d3dcompiler)
