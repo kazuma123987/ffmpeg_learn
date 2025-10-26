@@ -16,6 +16,7 @@ extern "C"
 }
 #endif
 
+#if 0
 // 高精度单调时钟（跨平台实现）
 static double get_monotonic_time()
 {
@@ -95,6 +96,7 @@ struct SyncStats
     double avg_render_time = 0; // 平均渲染时间
     double max_sleep_time = 0;  // 最长等待时间
 };
+#endif
 
 class SyncClock
 {

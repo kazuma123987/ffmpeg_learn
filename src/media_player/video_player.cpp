@@ -5,8 +5,6 @@
 // 初始化硬件解码器
 static AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
 
-std::mutex decode_mux;
-
 static bool hwDecode = true;
 static std::atomic<double> video_pts(0.0), audio_pts(0.0);
 void setFPS(void *window)
@@ -73,7 +71,10 @@ FMOD_RESULT F_CALLBACK audio_callback(FMOD_SOUND *sound, void *data, unsigned in
     const int64_t now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
     player->sync_clock.update_audio(frame_pts, now_ns); // 平滑系数0.2
     audio_pts = frame->pts * av_q2d(player->audio_time_base);
-    player->video_cv.notify_one();
+    if(audio_pts >= video_pts)
+    {
+        player->video_cv.notify_one();
+    }
 
     av_frame_free(&frame);
     // 计算可拷贝数据量
@@ -122,7 +123,10 @@ static void audio_callback(void *userdata, Uint8 *stream, int len)
     const int64_t now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
     player->sync_clock.update_audio(frame_pts, now_ns); // 平滑系数0.2
     audio_pts = frame->pts * av_q2d(player->audio_time_base);
-    player->video_cv.notify_one();
+    if(audio_pts >= video_pts)
+    {
+        player->video_cv.notify_one();
+    }
 
     av_frame_free(&frame);
     // 计算可拷贝数据量
@@ -409,7 +413,7 @@ void VideoPlayer::upload_frame(AVFrame *frame)
     {
         av_frame_free(&upload_frame);
     }
-    last_uploaded_frame = frame;
+
     gl_lock.unlock();
 }
 
@@ -453,89 +457,6 @@ void VideoPlayer::present_frame()
     checkGLError();
 }
 
-void VideoPlayer::update_sync_stats(double diff, double render_time)
-{
-    static std::vector<double> diffs;
-    diffs.push_back(diff);
-
-    stats_.total_frames++;
-    stats_.max_diff = std::max(stats_.max_diff, fabs(diff));
-
-    // 计算移动平均和标准差
-    constexpr double alpha = 0.1;
-    stats_.avg_diff = alpha * fabs(diff) + (1 - alpha) * stats_.avg_diff;
-
-    double sum_sq = 0.0;
-    for (auto d : diffs)
-        sum_sq += d * d;
-    stats_.stddev_diff = sqrt(sum_sq / diffs.size() - stats_.avg_diff * stats_.avg_diff);
-
-    // 保留最近1000个样本
-    if (diffs.size() > 1000)
-        diffs.erase(diffs.begin());
-}
-
-// 时钟漂移补偿
-void VideoPlayer::update_clock_prediction(double last_diff)
-{
-    static std::deque<double> diff_history;
-    constexpr size_t HISTORY_SIZE = 60; // 保留1秒历史（假设60fps）
-
-    // 维护历史记录
-    diff_history.push_back(last_diff);
-    if (diff_history.size() > HISTORY_SIZE)
-    {
-        diff_history.pop_front();
-    }
-
-    // 使用线性回归预测漂移趋势
-    double sum_x = 0.0, sum_y = 0.0, sum_xx = 0.0, sum_xy = 0.0;
-    for (size_t i = 0; i < diff_history.size(); ++i)
-    {
-        sum_x += i;
-        sum_y += diff_history[i];
-        sum_xx += i * i;
-        sum_xy += i * diff_history[i];
-    }
-
-    const double n = diff_history.size();
-    const double denominator = n * sum_xx - sum_x * sum_x;
-    if (denominator != 0)
-    {
-        const double slope = (n * sum_xy - sum_x * sum_y) / denominator;
-        sync_clock.update_drift_compensation(slope * 0.05); // 应用衰减后的斜率
-    }
-}
-
-// 平均渲染时间
-double VideoPlayer::calculate_avg_render_time() const
-{
-    constexpr size_t WINDOW_SIZE = 10;
-    static std::array<double, WINDOW_SIZE> render_times;
-    static size_t index = 0;
-
-    // 获取当前时间点
-    static auto lastTime = std::chrono::high_resolution_clock::now();
-    // 将时间点转换为自纪元（epoch）以来的纳秒数
-    double last_render_time_ = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - lastTime).count();
-    lastTime = std::chrono::high_resolution_clock::now();
-
-    // 更新环形缓冲区
-    render_times[index] = last_render_time_;
-    index = (index + 1) % WINDOW_SIZE;
-
-    // 计算加权平均（最近帧权重更高）
-    double sum = 0.0;
-    double weight_sum = 0.0;
-    for (size_t i = 0; i < WINDOW_SIZE; ++i)
-    {
-        double weight = 1.0 / (1.0 + i); // 指数衰减权重
-        sum += render_times[(index + i) % WINDOW_SIZE] * weight;
-        weight_sum += weight;
-    }
-    return sum / weight_sum;
-}
-
 void VideoPlayer::render_video_frame()
 {
     AVFrame *frame = nullptr;
@@ -547,12 +468,13 @@ void VideoPlayer::render_video_frame()
 
     video_pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(video_time_base);
 
-    std::unique_lock<std::mutex> video_lock(this->video_mutex);
+    std::unique_lock<std::mutex> video_lock(this->video_pts_mutex);
     this->video_cv.wait(video_lock,
     [this]()
     {
         return video_pts <= audio_pts || !running;
     });
+    video_lock.unlock(); // 手动释放锁
     // 在同步范围内：立即显示
     upload_frame(&(*frame));
     present_frame();

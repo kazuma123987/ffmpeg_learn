@@ -44,18 +44,6 @@ extern "C"
 // #define USE_FMOD_AUDIO
 #define USE_SDL_AUDIO
 
-//=== FFmpeg对象包装器 ===
-
-struct AVFrameDeleter
-{
-    void operator()(AVFrame *frame) const
-    {
-        av_frame_unref(frame);
-        av_frame_free(&frame);
-    }
-};
-using ScopedAVFrame = std::unique_ptr<AVFrame, AVFrameDeleter>;
-
 // 音频参数上下文
 struct AudioContext
 {
@@ -76,7 +64,6 @@ class VideoPlayer
 {
 public:
     VideoPlayer(const char *_filename);
-    double calculate_dynamic_threshold() const;
     void init_gl_resources(int width, int height);
     int init_ffmpeg(const char *customPath);
     void upload_frame(AVFrame *frame);
@@ -85,32 +72,23 @@ public:
                       int width, int height,
                       GLuint pbo, GLuint texID_in_shader);
     void present_frame();
-    void update_sync_stats(double diff, double render_time);
-    void update_clock_prediction(double last_diff);
-    double calculate_avg_render_time() const;
     void render_video_frame();
     void demux_loop();
-    void video_decode_loop();
     void handle_decode_error(int err);
     void renderer(Shader &shader);
     int initResource();
     void run();
     // 队列
-    // SafeQueue<AVPacket *> video_packet_queue{30}; // 最多缓存30个视频包
-    // SafeQueue<AVPacket *> audio_packet_queue{100};   // 最多缓存100个音频包
     SafeQueue<AVFrame *> video_frame_queue{10}; // 最多缓存10帧视频
     SafeQueue<AVFrame *> audio_frame_quene{30}; // 最多缓存30帧音频
     AVRational video_time_base, audio_time_base;
 
     // 线程控制
     std::atomic<bool> volatile running{true};
-    // std::thread demux_thread;
-    // std::thread video_decode_thread;
-    // std::thread audio_play_thread;
 
     // 同步对象
     std::mutex audio_mutex;
-    std::mutex video_mutex;
+    std::mutex video_pts_mutex;
     std::condition_variable audio_cv;
     std::condition_variable video_cv;
     SyncClock sync_clock;
@@ -138,12 +116,9 @@ private:
     Texture image_UV;
     GLuint pbo_ids[2] = {0, 0};
     std::atomic<int> pbo_index{0};
-    AVFrame *last_uploaded_frame = nullptr;
     std::mutex gl_mutex;
     const char *filename;
     int vIndex, aIndex;
-    struct SyncStats stats_;
-    double last_video_pts_;
 };
 #endif
 #endif
