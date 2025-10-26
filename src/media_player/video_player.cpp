@@ -4,6 +4,7 @@
 
 // 初始化硬件解码器
 static AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
+static AVPixelFormat sw_pix_fmt = AV_PIX_FMT_NONE;
 
 static bool hwDecode = true;
 static std::atomic<double> video_pts(0.0), audio_pts(0.0);
@@ -71,7 +72,7 @@ FMOD_RESULT F_CALLBACK audio_callback(FMOD_SOUND *sound, void *data, unsigned in
     const int64_t now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
     player->sync_clock.update_audio(frame_pts, now_ns); // 平滑系数0.2
     audio_pts = frame->pts * av_q2d(player->audio_time_base);
-    if(audio_pts >= video_pts)
+    if (audio_pts >= video_pts)
     {
         player->video_cv.notify_one();
     }
@@ -123,7 +124,7 @@ static void audio_callback(void *userdata, Uint8 *stream, int len)
     const int64_t now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
     player->sync_clock.update_audio(frame_pts, now_ns); // 平滑系数0.2
     audio_pts = frame->pts * av_q2d(player->audio_time_base);
-    if(audio_pts >= video_pts)
+    if (audio_pts >= video_pts)
     {
         player->video_cv.notify_one();
     }
@@ -227,25 +228,90 @@ static void framesizecallback(GLFWwindow *window, int width, int height)
     glViewport(0, 0, width, height);
 }
 
+static uint8_t gl_getdatasize(uint32_t datatype)
+{
+    uint8_t size = 0;
+    switch (datatype)
+    {
+    case GL_BYTE:
+    case GL_UNSIGNED_BYTE:
+        size = 1;
+        break;
+    case GL_SHORT:
+    case GL_UNSIGNED_SHORT:
+        size = 2;
+        break;
+    case GL_INT:
+    case GL_UNSIGNED_INT:
+    case GL_FLOAT:
+        size = 4;
+        break;
+    case GL_DOUBLE:
+        size = 8;
+        /* code */
+        break;
+
+    default:
+        size = 1;
+        break;
+    }
+    return size;
+}
+
 VideoPlayer::VideoPlayer(const char *_filename)
 {
     this->filename = _filename;
 }
 
 // 初始化OpenGL资源
-void VideoPlayer::init_gl_resources(int width, int height)
+void VideoPlayer::init_gl_resources(AVFrame *frame, AVPixelFormat pix_fmt)
 {
     std::lock_guard<std::mutex> gl_lock(gl_mutex);
+    int internalformat = 0;
+    int internalformat_UV = 0;
+    int imageformat = 0;
+    int imageformat_UV = 0;
+    int datatype = 0;
+    double radio = 0.0;
+    switch (pix_fmt)
+    {
+    case AV_PIX_FMT_YUV420P:
+    case AV_PIX_FMT_NV12:
+        internalformat = GL_R8;
+        internalformat_UV = GL_RG8;
+        imageformat = GL_RED;
+        datatype = GL_UNSIGNED_BYTE;
+        break;
+    // case AV_PIX_FMT_YUV420P10BE:
+    // case AV_PIX_FMT_YUV420P10LE:
+    // case AV_PIX_FMT_YUV420P12BE:
+    // case AV_PIX_FMT_YUV420P12LE:
+    // case AV_PIX_FMT_YUV420P14BE:
+    // case AV_PIX_FMT_YUV420P14LE:
+    // case AV_PIX_FMT_YUV420P16BE:
+    // case AV_PIX_FMT_YUV420P16LE:
+    case AV_PIX_FMT_P010BE:
+    case AV_PIX_FMT_P010LE:
+        internalformat = GL_R16;
+        internalformat_UV = GL_RG16;
+        imageformat = GL_RED;
+        datatype = GL_UNSIGNED_SHORT;
 
+        break;
+    default:
+        throw std::runtime_error("Unsupported pixel format");
+    }
+
+    radio = 1.5 * gl_getdatasize(datatype);
     // 创建YUV纹理
-    image_Y.setFormat(GL_R8, GL_RED);
-    image_U.setFormat(GL_R8, GL_RED);
-    image_V.setFormat(GL_R8, GL_RED);
-    image_UV.setFormat(GL_RG8, GL_RG);
-    image_Y.Generate(width, height, NULL, GL_UNSIGNED_BYTE, false);
-    image_U.Generate(width / 2, height / 2, NULL, GL_UNSIGNED_BYTE, false);
-    image_V.Generate(width / 2, height / 2, NULL, GL_UNSIGNED_BYTE, false);
-    image_UV.Generate(width / 2, height / 2, NULL, GL_UNSIGNED_BYTE, false);
+    image_Y.setFormat(internalformat, imageformat);
+    image_U.setFormat(internalformat, imageformat);
+    image_V.setFormat(internalformat, imageformat);
+    image_UV.setFormat(internalformat_UV, imageformat_UV);
+    image_Y.Generate(frame->width, frame->height, NULL, datatype, false);
+    image_U.Generate(frame->width / 2, frame->height / 2, NULL, datatype, false);
+    image_V.Generate(frame->width / 2, frame->height / 2, NULL, datatype, false);
+    image_UV.Generate(frame->width / 2, frame->height / 2, NULL, datatype, false);
 
     // 创建PBO
     glGenBuffers(2, pbo_ids);
@@ -253,7 +319,7 @@ void VideoPlayer::init_gl_resources(int width, int height)
     {
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_ids[i]);
         glBufferData(GL_PIXEL_UNPACK_BUFFER,
-                     width * height * 3 / 2, // YUV420P大小
+                     frame->width * frame->height * radio, // YUV420P大小
                      nullptr, GL_STREAM_DRAW);
     }
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
@@ -362,10 +428,15 @@ int VideoPlayer::init_ffmpeg(const char *customPath)
 
 void VideoPlayer::upload_frame(AVFrame *frame)
 {
-    std::unique_lock<std::mutex> gl_lock(gl_mutex);
     if (!frame || frame->width != video_codec_ctx->width)
     {
         return;
+    }
+
+    if (sw_pix_fmt != frame->format && frame->format != AV_PIX_FMT_NONE)
+    {
+        sw_pix_fmt = static_cast<AVPixelFormat>(frame->format);
+        init_gl_resources(frame, sw_pix_fmt);
     }
 
     // 处理硬件加速表面
@@ -374,54 +445,68 @@ void VideoPlayer::upload_frame(AVFrame *frame)
     // 使用双PBO异步上传
     int next_pbo = (pbo_index + 1) % 2;
 
-    // 上传Y分量
-    upload_plane(image_Y, GL_RED, upload_frame->data[0],
-                 upload_frame->linesize[0],
-                 frame->width, frame->height,
-                 pbo_ids[next_pbo], 0);
-
-    // 上传UV分量（处理不同格式）
+    // 上传YUV分量（处理不同格式）
     switch (upload_frame->format)
     {
     case AV_PIX_FMT_YUV420P:
         yuv420Shader.Use();
         rendererShader = &yuv420Shader;
+        upload_plane(image_Y, GL_RED, upload_frame->data[0],
+                     upload_frame->linesize[0],
+                     frame->width, frame->height,
+                     pbo_ids[next_pbo], 0, GL_UNSIGNED_BYTE);
         upload_plane(image_U, GL_RED, upload_frame->data[1],
                      upload_frame->linesize[1],
                      frame->width / 2, frame->height / 2,
-                     pbo_ids[next_pbo], 1);
+                     pbo_ids[next_pbo], 1, GL_UNSIGNED_BYTE);
         upload_plane(image_V, GL_RED, upload_frame->data[2],
                      upload_frame->linesize[2],
                      frame->width / 2, frame->height / 2,
-                     pbo_ids[next_pbo], 2);
+                     pbo_ids[next_pbo], 2, GL_UNSIGNED_BYTE);
         break;
     case AV_PIX_FMT_NV12:
         nv12Shader.Use();
         rendererShader = &nv12Shader;
+        upload_plane(image_Y, GL_RED, upload_frame->data[0],
+                     upload_frame->linesize[0],
+                     frame->width, frame->height,
+                     pbo_ids[next_pbo], 0, GL_UNSIGNED_BYTE);
         upload_plane(image_UV, GL_RG, upload_frame->data[1],
                      upload_frame->linesize[1],
                      frame->width / 2, frame->height / 2,
-                     pbo_ids[next_pbo], 1);
+                     pbo_ids[next_pbo], 1, GL_UNSIGNED_BYTE);
+        break;
+    case AV_PIX_FMT_P010LE:
+    case AV_PIX_FMT_P010BE:
+        nv12Shader.Use();
+        rendererShader = &nv12Shader;
+        upload_plane(image_Y, GL_RED, upload_frame->data[0],
+                     upload_frame->linesize[0],
+                     frame->width, frame->height,
+                     pbo_ids[next_pbo], 0, GL_UNSIGNED_SHORT);
+        upload_plane(image_UV, GL_RG, upload_frame->data[1],
+                     upload_frame->linesize[1],
+                     frame->width / 2, frame->height / 2,
+                     pbo_ids[next_pbo], 1, GL_UNSIGNED_SHORT);
         break;
     default:
         throw std::runtime_error("Unsupported pixel format");
     }
 
-    pbo_index= next_pbo;
+    pbo_index = next_pbo;
 
     if (upload_frame != frame)
     {
         av_frame_free(&upload_frame);
     }
-
-    gl_lock.unlock();
 }
 
 // 通用平面上传函数
 void VideoPlayer::upload_plane(Texture &tex, GLenum format,
                                uint8_t *data, int line_size,
                                int width, int height,
-                               GLuint pbo, GLuint texID_in_shader)
+                               GLuint pbo, GLuint texID_in_shader,
+                               int datatype)
 {
     glActiveTexture(GL_TEXTURE0 + texID_in_shader);
     tex.Bind();
@@ -430,7 +515,7 @@ void VideoPlayer::upload_plane(Texture &tex, GLenum format,
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
     uint8_t *pbo_ptr = static_cast<uint8_t *>(glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, line_size * height, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT));
 
-    if(pbo_ptr == nullptr)
+    if (pbo_ptr == nullptr)
     {
         return;
     }
@@ -440,13 +525,23 @@ void VideoPlayer::upload_plane(Texture &tex, GLenum format,
     glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
 
     // 异步上传
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, format, GL_UNSIGNED_BYTE, 0);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, format, datatype, 0);
 
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 }
 
-void VideoPlayer::present_frame()
+void VideoPlayer::present_frame(AVFrame *frame)
 {
+    // 在同步范围内：立即显示
+    try
+    {
+        upload_frame(frame);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << e.what() << '\n';
+    }
+
     // 执行实际绘制命令
     if (rendererShader)
     {
@@ -470,14 +565,12 @@ void VideoPlayer::render_video_frame()
 
     std::unique_lock<std::mutex> video_lock(this->video_pts_mutex);
     this->video_cv.wait(video_lock,
-    [this]()
-    {
-        return video_pts <= audio_pts || !running;
-    });
+                        [this]()
+                        {
+                            return video_pts <= audio_pts || !running;
+                        });
     video_lock.unlock(); // 手动释放锁
-    // 在同步范围内：立即显示
-    upload_frame(&(*frame));
-    present_frame();
+    present_frame(frame);
     av_frame_free(&frame);
 }
 
@@ -716,13 +809,13 @@ int VideoPlayer::initResource()
     yuv420Shader.unfm1i("v_tex", 2);
 
     // 初始化FFmpeg
-    if(init_ffmpeg(this->filename)<0)
+    if (init_ffmpeg(this->filename) < 0)
     {
         ret = -4;
         goto FAIL;
     }
     // 初始化纹理
-    init_gl_resources(video_codec_ctx->width, video_codec_ctx->height);
+    // init_gl_resources(video_codec_ctx->width, video_codec_ctx->height);
 FAIL:
     return ret;
 }

@@ -64,14 +64,15 @@ class VideoPlayer
 {
 public:
     VideoPlayer(const char *_filename);
-    void init_gl_resources(int width, int height);
+    void init_gl_resources(AVFrame *frame, AVPixelFormat pix_fmt);
     int init_ffmpeg(const char *customPath);
     void upload_frame(AVFrame *frame);
     void upload_plane(Texture &tex, GLenum format,
                       uint8_t *data, int line_size,
                       int width, int height,
-                      GLuint pbo, GLuint texID_in_shader);
-    void present_frame();
+                      GLuint pbo, GLuint texID_in_shader,
+                      int datatype);
+    void present_frame(AVFrame *frame);
     void render_video_frame();
     void demux_loop();
     void handle_decode_error(int err);
