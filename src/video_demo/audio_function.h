@@ -49,10 +49,10 @@ void blank() {} //-0-------------------------------拦截符--------------------
 // char rtspUrl[] = "http://ivi.bupt.edu.cn/hls/dftv.m3u8";int movie_type=liveshow;
 // char rtspUrl[] = "https://vip.w.xk.miui.com/10d7ff4c9368d411b254bb5c62d6e849";
 // char rtspUrl[] = "../res/tera.mp4";
-char rtspUrl[] = "../res/gura.mp4";
-int movie_type = local;
+// char rtspUrl[] = "../res/gura.mp4";
+// int movie_type = local;
 // http://1251316161.vod2.myqcloud.com/5f6ddb64vodsh1251316161/c841de715285890814995493210/ALat0G5iwIQA.mp4
-// char rtspUrl[] = "https://sk.cri.cn/887.m3u8";int movie_type=liveshow;//hitfm电台mp3节目
+char rtspUrl[] = "https://sk.cri.cn/887.m3u8";int movie_type=liveshow;//hitfm电台mp3节目
 // char rtspUrl[] = "http://10.125.39.201:10080/frecord/warriors.mp3";int movie_type=vod;//
 
 #define SDL_AUDIO_BUFFER_SIZE 1024

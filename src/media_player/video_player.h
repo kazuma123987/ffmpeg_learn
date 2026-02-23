@@ -39,8 +39,8 @@ extern "C"
 #ifdef __cplusplus
 }
 
-// #define USE_SDL_WINDOW
-#define USE_GLFW_WINDOW
+#define USE_SDL_WINDOW
+// #define USE_GLFW_WINDOW
 // #define USE_FMOD_AUDIO
 #define USE_SDL_AUDIO
 

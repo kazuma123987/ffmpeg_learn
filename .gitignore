@@ -1,3 +1,7 @@
 build/*
 res/*
 *.exe
+.cache
+*.pdb
+*.obj
+*.mp4

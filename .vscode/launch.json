@@ -5,6 +5,22 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "type": "lldb",
+            "request": "launch",
+            "name": "(lldb) 启动",
+            "program": "${workspaceFolder}/bin/media_player.exe",
+            // "program": "${workspaceFolder}/bin/ffplay.exe",
+            // "program": "${workspaceFolder}/bin/video_demo.exe",
+            "stopOnEntry": false,
+            "args": [],
+            "cwd": "${workspaceFolder}/bin",
+            "initCommands": [
+
+            ],
+            "preLaunchTask": "debug"
+        },
+        
+        {
             "name": "(gdb) 启动",
             "type": "cppdbg",
             "request": "launch",

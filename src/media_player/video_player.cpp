@@ -749,6 +749,11 @@ int VideoPlayer::initResource()
 {
     int ret = 0;
 #if defined(USE_SDL_WINDOW) || defined(USE_SDL_AUDIO)
+    // 1. 声明程序为“每显示器DPI感知”，这是最高等级的感知
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+    
+    // 2. 告诉SDL，我们想要自己处理逻辑坐标，而不是让它帮我们缩放
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "1"); // 注意这里是 "1"，启用逻辑坐标系统
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO))
     {
         fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
@@ -758,7 +763,7 @@ int VideoPlayer::initResource()
 #endif
 #ifdef USE_SDL_WINDOW
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     // 创建SDL 720
     window = SDL_CreateWindow("Media Player", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL);
@@ -860,7 +865,7 @@ void VideoPlayer::run()
         else if (event.type == SDL_WINDOWEVENT)
         {
             if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
-                glViewport(0, 0, event.window.data1, event.window.data2);
+                glViewport(0, 0, event.window.data1*2, event.window.data2*2);
         }
 #elif defined(USE_GLFW_WINDOW)
         if (glfwWindowShouldClose(window))
